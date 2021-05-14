@@ -27,28 +27,82 @@
 
 //#define USE_DS18x20_RECONFIGURE    // When sensor is lost keep retrying or re-configure
 //#define DS18x20_USE_ID_AS_NAME      // Use last 3 bytes for naming of sensors
+#ifdef USE_THINGSPEAK
+#include <ThingSpeak.h>
+WiFiClient  TS_client;
+const uint8_t ow[][8] PROGMEM = {   // fixed sensorindex in ThingSpeak Fields
+#ifdef THINGSPEAK_TEST
+      { 0x28, 0x2D, 0x9D, 0x27, 0x03, 0x00, 0x00, 0xAB }, // Hub DS18B20
+      { 0x28, 0xF5, 0x8E, 0x27, 0x03, 0x00, 0x00, 0xFC }, // neu DS18B20
+      { 0x3A, 0x84, 0x39, 0x46, 0x00, 0x00, 0x00, 0x37 }, // DS2314-2
+      { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 }, // signal last
+/*
+      { 0x28, 0x52, 0xc9, 0x28, 0x03, 0x00, 0x00, 0x07 }, // 2800000328c95207
+      { 0x28, 0x89, 0xb9, 0x28, 0x03, 0x00, 0x00, 0x56 }, // 2800000328b98956
+      { 0x28, 0xf5, 0x8e, 0x27, 0x03, 0x00, 0x00, 0x56 }, // 28000003278ef5fc
+      { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 }, // signal last
+*/
+#else // != THINGSPEAK_TEST
+      { 0x28, 0x89, 0xB9, 0x28, 0x03, 0x00, 0x00, 0x56 }, // neu DS18B20
+      { 0x28, 0x51, 0xA4, 0x27, 0x03, 0x00, 0x00, 0x39 }, // HeizRaum Temp
+      { 0x28, 0xC8, 0x81, 0x27, 0x03, 0x00, 0x00, 0x34 }, // Vorlauf
+      { 0x10, 0x9E, 0xA8, 0xFF, 0x01, 0x08, 0x00, 0x62 }, // Ruecklauf
+      { 0x28, 0x07, 0x85, 0x27, 0x03, 0x00, 0x00, 0x90 }, // Warmwasser
+      { 0x3A, 0xD1, 0x2C, 0x46, 0x00, 0x00, 0x00, 0x5C }, // DS2314-1
+      { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 }, // signal last
+#endif // THINGSPEAK_TEST
+};
+#define OW_DEFDEV ((uint8_t) sizeof(ow)/sizeof(ow[0])-1)  // ignore last
+#endif  // USE_THINGSPEAK
+
 
 #define DS18S20_CHIPID       0x10  // +/-0.5C 9-bit
 #define DS1822_CHIPID        0x22  // +/-2C 12-bit
 #define DS18B20_CHIPID       0x28  // +/-0.5C 12-bit
 #define MAX31850_CHIPID      0x3B  // +/-0.25C 14-bit
+#define DS2413_CHIPID        0x3A  // GPIO 2bit Port Open Collector
 
 #define W1_SKIP_ROM          0xCC
 #define W1_CONVERT_TEMP      0x44
 #define W1_WRITE_EEPROM      0x48
 #define W1_WRITE_SCRATCHPAD  0x4E
 #define W1_READ_SCRATCHPAD   0xBE
+#define DS2413_ACCESS_READ   0xF5
+#define DS2413_ACCESS_WRITE  0x5A
+#define DS2413_ACK_SUCCESS   0xAA
+#define DS2413_ACK_ERROR     0xFF
+#define DS2413_READ_MASK     0x0F   // PIOstate
+#define DS2413_WRITE_MASK    0xFC
+#define DS2413_PORTA_OUT     0b0010 // PIOstate
+#define DS2413_PORTB_OUT     0b1000
+#define DS2413_OUTPUT_MASK   (DS2413_PORTB_OUT | DS2413_PORTA_OUT)
+#define DS2413_PORTA_IN      0b0001
+#define DS2413_PORTB_IN      0b0100
+#define DS2413_INPUT_MASK    (DS2413_PORTB_IN | DS2413_PORTA_IN)
+#define DS2413_ERROR_BIT     0x80
 
 #ifndef DS18X20_MAX_SENSORS // DS18X20_MAX_SENSORS fallback to 8 if not defined in user_config_override.h
 #define DS18X20_MAX_SENSORS  8
 #endif
 
+#ifndef DS18x20_ADD_DS2413
 const char kDs18x20Types[] PROGMEM = "DS18x20|DS18S20|DS1822|DS18B20|MAX31850";
-
 uint8_t ds18x20_chipids[] = { 0, DS18S20_CHIPID, DS1822_CHIPID, DS18B20_CHIPID, MAX31850_CHIPID };
+#else
+const char kDs18x20Types[] PROGMEM = "DS18x20|DS18S20|DS1822|DS18B20|MAX31850|DS2413";
+uint8_t ds18x20_chipids[] = { 0, DS18S20_CHIPID, DS1822_CHIPID, DS18B20_CHIPID, MAX31850_CHIPID, DS2413_CHIPID };
+#endif // DS18x20_ADD_DS2413
 
 struct {
-  float temperature;
+  union {
+    float temperature;            // DS18x20
+    struct {                      // DS2413
+      uint8_t devidx;             // Tasmota RelayNumber and RelayNumber+1
+      uint8_t pioState;           // DS2413 PIOstate
+      uint8_t pub_pioState;       // published PIOstate
+      uint8_t change_bits;        // published PIOstate
+    };
+  };
   float temp_sum;
   uint16_t numread;
   uint8_t address[8];
@@ -63,6 +117,9 @@ struct {
 #endif
   char name[17];
   uint8_t sensors = 0;
+#ifdef DS18x20_ADD_DS2413
+  uint8_t ds2413_sensors = 0;
+#endif // DS18x20_ADD_DS2413
   uint8_t input_mode = 0;    // INPUT or INPUT_PULLUP (=2)
   int8_t pin = 0;            // Shelly GPIO3 input only
   int8_t pin_out = 0;        // Shelly GPIO00 output only
@@ -293,7 +350,13 @@ bool OneWireCrc8(uint8_t *addr) {
 
 void Ds18x20Init(void) {
   DS18X20Data.pin = Pin(GPIO_DSB);
-  DS18X20Data.input_mode = Settings.flag3.ds18x20_internal_pullup ? INPUT_PULLUP : INPUT;  // SetOption74 - Enable internal pullup for single DS18x20 sensor
+#ifndef USE_THINGSPEAK
+            // SetOption74 - Enable internal pullup for single DS18x20 sensor
+  DS18X20Data.input_mode = Settings.flag3.ds18x20_internal_pullup ?
+                                                        INPUT_PULLUP : INPUT;
+#else                               // use option to enable/disable Thingspeak
+  DS18X20Data.input_mode = INPUT;   // always multi sensor
+#endif //USE_THINGSPEAK
 
   if (PinUsed(GPIO_DSB_OUT)) {
     DS18X20Data.pin_out = Pin(GPIO_DSB_OUT);
@@ -319,6 +382,9 @@ void Ds18x20Init(void) {
        ((ds18x20_sensor[DS18X20Data.sensors].address[0] == DS18S20_CHIPID) ||
         (ds18x20_sensor[DS18X20Data.sensors].address[0] == DS1822_CHIPID) ||
         (ds18x20_sensor[DS18X20Data.sensors].address[0] == DS18B20_CHIPID) ||
+#ifdef DS18x20_ADD_DS2413
+        (ds18x20_sensor[DS18X20Data.sensors].address[0] == DS2413_CHIPID) ||
+#endif
         (ds18x20_sensor[DS18X20Data.sensors].address[0] == MAX31850_CHIPID))) {
       ds18x20_sensor[DS18X20Data.sensors].index = DS18X20Data.sensors;
       ids[DS18X20Data.sensors] = ds18x20_sensor[DS18X20Data.sensors].address[0];  // Chip id
@@ -329,13 +395,60 @@ void Ds18x20Init(void) {
     }
   }
   for (uint32_t i = 0; i < DS18X20Data.sensors; i++) {
+    AddLog(LOG_LEVEL_DEBUG, PSTR(D_LOG_DSB "Dallas 1wire gefunden - %02x%02x%02x%02x%02x%02x%02x%02x"),
+      ds18x20_sensor[i].address[0], ds18x20_sensor[i].address[6],
+      ds18x20_sensor[i].address[5], ds18x20_sensor[i].address[4],
+      ds18x20_sensor[i].address[3], ds18x20_sensor[i].address[2],
+      ds18x20_sensor[i].address[1], ds18x20_sensor[i].address[7] );
     for (uint32_t j = i + 1; j < DS18X20Data.sensors; j++) {
+#ifndef DS18x20_ADD_DS2413
       if (ids[ds18x20_sensor[i].index] > ids[ds18x20_sensor[j].index]) {  // Sort ascending
+#else
+      if ( ((ids[ds18x20_sensor[i].index] > ids[ds18x20_sensor[j].index]) && 
+            ((ds18x20_sensor[ds18x20_sensor[i].index].address[0] != DS18B20_CHIPID) ||
+             (ds18x20_sensor[ds18x20_sensor[j].index].address[0] == DS18B20_CHIPID))) ||
+            ((ds18x20_sensor[ds18x20_sensor[i].index].address[0] != DS18B20_CHIPID) &&
+             (ds18x20_sensor[ds18x20_sensor[j].index].address[0] == DS18B20_CHIPID)) ) {  
+#endif
         std::swap(ds18x20_sensor[i].index, ds18x20_sensor[j].index);
       }
     }
   }
   AddLog(LOG_LEVEL_DEBUG, PSTR(D_LOG_DSB D_SENSORS_FOUND " %d"), DS18X20Data.sensors);
+#ifdef DS18x20_ADD_DS2413
+  TasmotaGlobal.devices_present = TasmotaGlobal.devices_present -
+                                            (2 * DS18X20Data.ds2413_sensors);
+            // reset no of devices to avoid duplicate ports on duplicate init
+  DS18X20Data.ds2413_sensors = 0;
+  for (uint32_t i = 0; i < DS18X20Data.sensors; i++) {
+    uint8 index = ds18x20_sensor[i].index;
+    if (ds18x20_sensor[index].address[0] == DS2413_CHIPID) {
+      ds18x20_sensor[index].devidx = TasmotaGlobal.devices_present;
+      if (Ds18x20Read(i)) {                             // restore Powerstate
+        AddLog(LOG_LEVEL_DEBUG, PSTR(
+            "DSP: Initial pioState %02x, GlobalPower %_X, SettingsPower %_X"),
+      ds18x20_sensor[index].pioState, &TasmotaGlobal.power, &Settings.power);
+        ds18x20_sensor[index].pub_pioState = ds18x20_sensor[index].pioState;
+        bitWrite(TasmotaGlobal.power, TasmotaGlobal.devices_present,
+                    bitRead(Settings.power, TasmotaGlobal.devices_present));
+        bitWrite(TasmotaGlobal.power, TasmotaGlobal.devices_present +1,
+                    bitRead(Settings.power, TasmotaGlobal.devices_present+1));
+        //bitWrite(TasmotaGlobal.power, TasmotaGlobal.devices_present,
+        //            (ds18x20_sensor[index].pioState & DS2413_PORTA_OUT)>>1);
+        //bitWrite(TasmotaGlobal.power, TasmotaGlobal.devices_present+1,
+        //            (ds18x20_sensor[index].pioState & DS2413_PORTB_OUT)>>3);
+        DS2413write(index, TasmotaGlobal.power);
+     }
+      TasmotaGlobal.devices_present += 2;	          // 2 Outputs (+ 2 Inputs)
+      DS18X20Data.ds2413_sensors++;  
+    }
+  }
+  AddLog(LOG_LEVEL_DEBUG, PSTR(D_LOG_DSB "DS2413 GPIO gefunden %d"),
+                                                  DS18X20Data.ds2413_sensors);
+#endif
+#ifdef USE_THINGSPEAK
+  ThingSpeak.begin(TS_client);  // Initialize ThingSpeak
+#endif  // USE_THINGSPEAK
 }
 
 void Ds18x20Convert(void) {
@@ -362,57 +475,102 @@ bool Ds18x20Read(uint8_t sensor) {
   for (uint32_t retry = 0; retry < 3; retry++) {
     OneWireReset();
     OneWireSelect(ds18x20_sensor[index].address);
-    OneWireWrite(W1_READ_SCRATCHPAD);
-    for (uint32_t i = 0; i < 9; i++) {
-      data[i] = OneWireRead();
-    }
-    if (OneWireCrc8(data)) {
-      switch(ds18x20_sensor[index].address[0]) {
-        case DS18S20_CHIPID: {
-          int16_t tempS = (((data[1] << 8) | (data[0] & 0xFE)) << 3) | ((0x10 - data[6]) & 0x0F);
-          temperature = ConvertTemp(tempS * 0.0625 - 0.250);
-          break;
-        }
-        case DS1822_CHIPID:
-        case DS18B20_CHIPID: {
-          if (data[4] != 0x7F) {
-            data[4] = 0x7F;                 // Set resolution to 12-bit
-            OneWireReset();
-            OneWireSelect(ds18x20_sensor[index].address);
-            OneWireWrite(W1_WRITE_SCRATCHPAD);
-            OneWireWrite(data[2]);          // Th Register
-            OneWireWrite(data[3]);          // Tl Register
-            OneWireWrite(data[4]);          // Configuration Register
-            OneWireSelect(ds18x20_sensor[index].address);
-            OneWireWrite(W1_WRITE_EEPROM);  // Save scratchpad to EEPROM
-#ifdef W1_PARASITE_POWER
-            DS18X20Data.w1_power_until = millis() + 10; // 10ms specified duration for EEPROM write
+#ifdef DS18x20_ADD_DS2413
+    if (ds18x20_sensor[index].address[0] != DS2413_CHIPID) {
 #endif
-          }
-          uint16_t temp12 = (data[1] << 8) + data[0];
-          if (temp12 > 2047) {
-            temp12 = (~temp12) +1;
-            sign = -1;
-          }
-          temperature = ConvertTemp(sign * temp12 * 0.0625);  // Divide by 16
-          break;
-        }
-        case MAX31850_CHIPID: {
-          int16_t temp14 = (data[1] << 8) + (data[0] & 0xFC);
-          temperature = ConvertTemp(temp14 * 0.0625);  // Divide by 16
-          break;
-        }
+      OneWireWrite(W1_READ_SCRATCHPAD);
+      for (uint32_t i = 0; i < 9; i++) {
+        data[i] = OneWireRead();
       }
-      ds18x20_sensor[index].temperature = temperature;
-      if (Settings.flag5.ds18x20_mean) {
-        if (ds18x20_sensor[index].numread++ == 0) {
-          ds18x20_sensor[index].temp_sum = 0;
+      if (OneWireCrc8(data)) {
+        switch(ds18x20_sensor[index].address[0]) {
+          case DS18S20_CHIPID: {
+            int16_t tempS = (((data[1] << 8) | (data[0] & 0xFE)) << 3) | ((0x10 - data[6]) & 0x0F);
+            temperature = ConvertTemp(tempS * 0.0625 - 0.250);
+            break;
+          }
+          case DS1822_CHIPID:
+          case DS18B20_CHIPID: {
+            if (data[4] != 0x7F) {
+              data[4] = 0x7F;                 // Set resolution to 12-bit
+              OneWireReset();
+              OneWireSelect(ds18x20_sensor[index].address);
+              OneWireWrite(W1_WRITE_SCRATCHPAD);
+              OneWireWrite(data[2]);          // Th Register
+              OneWireWrite(data[3]);          // Tl Register
+              OneWireWrite(data[4]);          // Configuration Register
+              OneWireSelect(ds18x20_sensor[index].address);
+              OneWireWrite(W1_WRITE_EEPROM);  // Save scratchpad to EEPROM
+#ifdef W1_PARASITE_POWER
+              DS18X20Data.w1_power_until = millis() + 10; // 10ms specified duration for EEPROM write
+#endif
+            }
+            uint16_t temp12 = (data[1] << 8) + data[0];
+            if (temp12 > 2047) {
+              temp12 = (~temp12) +1;
+              sign = -1;
+            }
+            temperature = ConvertTemp(sign * temp12 * 0.0625);  // Divide by 16
+            break;
+          }
+          case MAX31850_CHIPID: {
+            int16_t temp14 = (data[1] << 8) + (data[0] & 0xFC);
+            temperature = ConvertTemp(temp14 * 0.0625);  // Divide by 16
+            break;
+          }
         }
-        ds18x20_sensor[index].temp_sum += temperature;
+        ds18x20_sensor[index].temperature = temperature;
+        if (Settings.flag5.ds18x20_mean) {
+          if (ds18x20_sensor[index].numread++ == 0) {
+            ds18x20_sensor[index].temp_sum = 0;
+          }
+          ds18x20_sensor[index].temp_sum += temperature;
+        }
+        ds18x20_sensor[index].valid = SENSOR_MAX_MISS;
+        return true;
       }
-      ds18x20_sensor[index].valid = SENSOR_MAX_MISS;
-      return true;
+#ifdef DS18x20_ADD_DS2413
+    } else {                                                    // read DS2413
+      OneWireWrite(DS2413_ACCESS_READ);
+      data[0] = OneWireRead();
+      data[1] = data[0] & DS2413_READ_MASK;
+      if (data[1] == (((~data[0])>>4) & DS2413_READ_MASK)){     // read valid
+        data[2] = (data[1] ^ ds18x20_sensor[index].pioState)
+                                  & DS2413_INPUT_MASK; // any changes in input
+        if (data[2]) {                              // debounce input changes
+          ds18x20_sensor[index].change_bits |= data[2];
+          for (uint8_t i=0; i<2; i++) {               // check each input bit
+            if (data[2] & (1<<(i*2))) {                   // propagate change
+              ds18x20_sensor[index].pioState &= ~(1<<(i*2));
+              ds18x20_sensor[index].pioState |= data[1] & (1<<(i*2));
+              AddLog(LOG_LEVEL_DEBUG,
+                                  PSTR("PiO: Ds2413CheckInputDebounced %08x"),
+                                          ds18x20_sensor[index].pub_pioState);
+            } else {                    // bit stable, check for valid change
+              if ((data[1] ^ ds18x20_sensor[index].pub_pioState) &
+                                                                (1<<(i*2))) {
+                ds18x20_sensor[index].pub_pioState &= ~(1<<(i*2));
+                ds18x20_sensor[index].pub_pioState |= data[1] & (1<<(i*2));
+                ResponseTime_P(PSTR(",\"DS2413%c%d_INP\":{\"D%i\":%i}}"), 
+                              IndexSeparator(), index+1, i,
+                              bitRead(ds18x20_sensor[index].pub_pioState,i));
+                MqttPublishPrefixTopicRulesProcess_P(RESULT_OR_STAT,  
+                                                          PSTR("DS2413_INP"));
+                if (Settings.flag3.hass_tele_on_power) {        // SetOption59
+                  MqttPublishSensor();              // add tele/%topic%/SENSOR
+                }
+              }
+            }
+          }
+        }
+        ds18x20_sensor[index].pioState &= ~DS2413_OUTPUT_MASK;
+        ds18x20_sensor[index].pioState |= (data[1] & DS2413_OUTPUT_MASK);
+        ds18x20_sensor[index].valid = SENSOR_MAX_MISS;
+        return true;
+      }
+      ds18x20_sensor[index].change_bits |= DS2413_ERROR_BIT;
     }
+#endif
   }
   AddLog(LOG_LEVEL_DEBUG, PSTR(D_LOG_DSB D_SENSOR_CRC_ERROR));
   return false;
@@ -420,11 +578,10 @@ bool Ds18x20Read(uint8_t sensor) {
 
 void Ds18x20Name(uint8_t sensor) {
   uint8_t index = sizeof(ds18x20_chipids);
-  while (index) {
+  while (--index) {
     if (ds18x20_sensor[ds18x20_sensor[sensor].index].address[0] == ds18x20_chipids[index]) {
       break;
     }
-    index--;
   }
   GetTextIndexed(DS18X20Data.name, sizeof(DS18X20Data.name), index, kDs18x20Types);
   if (DS18X20Data.sensors > 1) {
@@ -440,6 +597,69 @@ void Ds18x20Name(uint8_t sensor) {
   }
 }
 
+
+#ifdef DS18x20_ADD_DS2413
+
+bool DS2413write(int index, uint32_t power) {
+  uint8_t relay_state;
+  relay_state = bitRead(power, ds18x20_sensor[index].devidx)<<1 |
+                          bitRead(power, ds18x20_sensor[index].devidx +1)<<3;
+  AddLog(LOG_LEVEL_DEBUG, PSTR(D_LOG_DSB "DS2413-%d Write Portbits 0x%02x"),
+                                                        index+1, relay_state);
+  relay_state ^= (ds18x20_sensor[index].pub_pioState & DS2413_OUTPUT_MASK);
+  AddLog(LOG_LEVEL_DEBUG, PSTR(D_LOG_DSB "DS2413-%d Write Portchange 0x%02x"),
+                                                        index+1, relay_state);
+  if (relay_state == 0) {
+    return true;
+  }
+  ds18x20_sensor[index].change_bits |= relay_state;
+  if (ds18x20_sensor[index].valid) { ds18x20_sensor[index].valid--; }
+  relay_state = bitRead(power, ds18x20_sensor[index].devidx) |
+                          bitRead(power, ds18x20_sensor[index].devidx +1)<<1;
+  OneWireReset();
+  OneWireSelect(ds18x20_sensor[index].address);
+  OneWireWrite(DS2413_ACCESS_WRITE);
+  relay_state |= DS2413_WRITE_MASK;
+  OneWireWrite(relay_state);
+  OneWireWrite(~relay_state);
+  relay_state = OneWireRead();                /* 0xAA=success, 0xFF=failure */
+  if (relay_state == DS2413_ACK_SUCCESS) {
+    relay_state = OneWireRead();
+    if ((relay_state & DS2413_READ_MASK) == 
+                                  (((~relay_state)>>4) & DS2413_READ_MASK)) {
+      ds18x20_sensor[index].pub_pioState &= ~DS2413_OUTPUT_MASK;
+      ds18x20_sensor[index].pub_pioState |=(relay_state & DS2413_OUTPUT_MASK);
+      AddLog(LOG_LEVEL_DEBUG, PSTR(D_LOG_DSB "DS2413-%d Write Port 0x%02x"),
+                                                        index+1, relay_state);
+      ds18x20_sensor[index].valid = SENSOR_MAX_MISS;
+      return true;
+    }
+  }
+  return false;
+}
+
+bool allDs2413write()
+{
+  bool return_val = true;
+  if (DS18X20Data.sensors == 0) return return_val;
+  for (uint32_t i = 0; i < DS18X20Data.sensors; i++) {
+    int index = ds18x20_sensor[i].index;
+    if (ds18x20_sensor[index].address[0] == DS2413_CHIPID) {
+      for (uint32_t retry = 0; retry < 3; retry++) {
+        if (DS2413write(index, XdrvMailbox.index)) {
+          break;
+        } else {
+          return_val = false;
+          ds18x20_sensor[index].change_bits |= DS2413_ERROR_BIT;
+          AddLog(LOG_LEVEL_DEBUG,
+                            PSTR(D_LOG_DSB "DS2413-%d write Error"), index+1);
+        }
+      }
+    }
+  }
+  return return_val;
+}
+#endif
 /********************************************************************************************/
 
 void Ds18x20EverySecond(void) {
@@ -475,13 +695,17 @@ void Ds18x20EverySecond(void) {
   }
 }
 
+#ifdef DS18x20_ADD_DS2413
+#ifdef USE_WEBSERVER
+const char HTTP_SNS_PORT[]          PROGMEM = "{s}%s "  " IO Status"         "{m}%s "              "{e}";
+#endif  // USE_WEBSERVER
+#endif
+
 void Ds18x20Show(bool json) {
   for (uint32_t i = 0; i < DS18X20Data.sensors; i++) {
     uint8_t index = ds18x20_sensor[i].index;
-
     if (ds18x20_sensor[index].valid) {   // Check for valid temperature
       Ds18x20Name(i);
-
       if (json) {
         if (Settings.flag5.ds18x20_mean) {
           if ((0 == TasmotaGlobal.tele_period) && ds18x20_sensor[index].numread) {
@@ -493,8 +717,17 @@ void Ds18x20Show(bool json) {
         for (uint32_t j = 0; j < 6; j++) {
           sprintf(address+2*j, "%02X", ds18x20_sensor[index].address[6-j]);  // Skip sensor type and crc
         }
-        ResponseAppend_P(PSTR(",\"%s\":{\"" D_JSON_ID "\":\"%s\",\"" D_JSON_TEMPERATURE "\":%*_f}"),
-          DS18X20Data.name, address, Settings.flag2.temperature_resolution, &ds18x20_sensor[index].temperature);
+#ifdef DS18x20_ADD_DS2413
+        if(ds18x20_sensor[index].address[0] != DS2413_CHIPID) {
+#endif //DS18x20_ADD_DS2413
+          ResponseAppend_P(PSTR(",\"%s\":{\"" D_JSON_ID "\":\"%s\",\"" D_JSON_TEMPERATURE "\":%*_f}"),
+            DS18X20Data.name, address, Settings.flag2.temperature_resolution, &ds18x20_sensor[index].temperature);
+#ifdef DS18x20_ADD_DS2413
+        } else {
+          ResponseAppend_P(PSTR(",\"%s\":{\"" D_JSON_ID "\":\"%s\",\"" "Port Status" "\":\"%d\"}"),
+              DS18X20Data.name, address, ds18x20_sensor[index].pub_pioState);
+        }
+#endif //DS18x20_ADD_DS2413
 #ifdef USE_DOMOTICZ
         if ((0 == TasmotaGlobal.tele_period) && (0 == i)) {
           DomoticzFloatSensor(DZ_TEMP, ds18x20_sensor[index].temperature);
@@ -505,13 +738,55 @@ void Ds18x20Show(bool json) {
           KnxSensor(KNX_TEMPERATURE, ds18x20_sensor[index].temperature);
         }
 #endif  // USE_KNX
+#ifdef USE_THINGSPEAK
+        if (0 == TasmotaGlobal.tele_period) {
+          uint32_t j;
+          for ( j = 0; j < OW_DEFDEV; j++) {        // search index in ow[][8]
+            if (0 == memcmp_P(ds18x20_sensor[index].address, ow[j],
+                                                            sizeof(ow[0]))) {
+              if ((ds18x20_sensor[index].address[0] != DS2413_CHIPID)) {
+                ThingSpeak.setField(j+1, ds18x20_sensor[index].temperature);
+              } else {                                            // ==ds2413
+                long io = ds18x20_sensor[index].pub_pioState;
+                io |= ((long)ds18x20_sensor[index].change_bits << 4);
+                ds18x20_sensor[index].change_bits = 0;
+                // io |= ((long)ds18x20_sensor[index].power_bits << 8);
+                ThingSpeak.setField(j+1, io);
+              }
+              break;
+            }
+          }
+        }
+#endif  // USE_THINGSPEAK
 #ifdef USE_WEBSERVER
       } else {
-        WSContentSend_Temp(DS18X20Data.name, ds18x20_sensor[index].temperature);
+#ifdef DS18x20_ADD_DS2413
+        if(ds18x20_sensor[index].address[0] != DS2413_CHIPID) {
+#endif //DS18x20_ADD_DS2413
+          WSContentSend_Temp(DS18X20Data.name, ds18x20_sensor[index].temperature);
+#ifdef DS18x20_ADD_DS2413
+        } else {
+          char portDisplay[17];
+          sprintf(portDisplay, "%c000%c%c%c%c",
+              ds18x20_sensor[index].change_bits&0x80 ?'1':'0',
+          ds18x20_sensor[index].pub_pioState&0x8  ?'1':'0',
+          ds18x20_sensor[index].pub_pioState&0x4  ?'1':'0',
+          ds18x20_sensor[index].pub_pioState&0x2  ?'1':'0',
+          ds18x20_sensor[index].pub_pioState&0x1  ?'1':'0' );
+          WSContentSend_PD(HTTP_SNS_PORT, DS18X20Data.name, portDisplay);
+        }
+#endif //DS18x20_ADD_DS2413
 #endif  // USE_WEBSERVER
       }
     }
   }
+#ifdef USE_THINGSPEAK
+  if ((0 == TasmotaGlobal.tele_period) && json && Settings.flag3.ds18x20_internal_pullup) {
+    int ret = ThingSpeak.writeFields( (unsigned long)THIS_CHANNELNR,
+                                                        PSTR(THIS_WRITEKEY));
+    AddLog(LOG_LEVEL_DEBUG, PSTR("ThS: ThingSpeak.writeFields %d"), ret);
+  }
+#endif  // USE_THINGSPEAK
 }
 
 /*********************************************************************************************\
@@ -526,6 +801,11 @@ bool Xsns05(uint8_t function) {
       case FUNC_INIT:
         Ds18x20Init();
         break;
+#ifdef DS18x20_ADD_DS2413
+      case FUNC_SET_POWER:
+        result = allDs2413write();
+        break;
+#endif //DS18x20_ADD_DS2413
       case FUNC_EVERY_SECOND:
         Ds18x20EverySecond();
         break;
