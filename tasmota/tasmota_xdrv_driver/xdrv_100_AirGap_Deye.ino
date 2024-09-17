@@ -29,14 +29,14 @@ An example full static configuration:
 #define USE_WIFI_AIRGAP_DEYE
 #define USE_WIFI_RANGE_EXTENDER_CLIENTS
 #define WIFI_AGD_STATE 1
-#define WIFI_AGD_SSID "rangeextender"
+#define WIFI_AGD_SSID "airgapdeye"
 #define WIFI_AGD_PASSWORD "securepassword"
-#define WIFI_AGD_IP_ADDRESS "192.168.99.1"
+#define WIFI_AGD_IP_ADDRESS "192.168.123.1"
 #define WIFI_AGD_SUBNETMASK "255.255.255.0"
 
 
-A full command to enable the Range Extender, including with NAPT could be:
-Backlog AGDSSID rangeextender ; AGDPassword securepassword ; AGDAddress 192.168.123.1 ; AGDSubnet 255.255.255.0; AGDState 1 
+A full command to enable the AirGap Deye could be:
+Backlog AGDSSID airgapdeye ; AGDPassword securepassword ; AGDAddress 192.168.123.1 ; AGDSubnet 255.255.255.0; AGDState 1 
 
 \*********************************************************************************************/
 
@@ -94,13 +94,13 @@ void (*const DrvAgdCommand[])(void) PROGMEM = {
 #ifdef ESP32
 #include <dhcpserver/dhcpserver.h>
 #include "esp_wifi.h"
+#include "esp_wifi_ap_get_sta_list.h"
 #endif // ESP32
 
 #define AGD_NOT_CONFIGURED 0
 #define AGD_FORCE_CONFIGURE 1
 #define AGD_CONFIGURED 2
 #define AGD_CONFIG_INCOMPLETE 3
-#define AGD_SETUP_NAPT 4
 
 typedef struct
 {
@@ -119,8 +119,8 @@ bool AgdApUp()
 void AgdCheckConfig(void)
 {
   if (
-      strlen(SettingsText(SET_AGD_SSID)) > 0 &&
-      strlen(SettingsText(SET_AGD_PASSWORD)) >= 8 &&
+      strlen(SettingsText(SET_RGX_SSID)) > 0 &&
+      strlen(SettingsText(SET_RGX_PASSWORD)) >= 8 &&
       Settings->ipv4_rgx_address &&
       Settings->ipv4_rgx_subnetmask)
   {
@@ -142,16 +142,16 @@ void CmndAgdClients(void)
 
 #if defined(ESP32)
   wifi_sta_list_t wifi_sta_list = {0};
-  tcpip_adapter_sta_list_t adapter_sta_list = {0};
+  wifi_sta_mac_ip_list_t wifi_sta_ip_mac_list = {0};
 
   esp_wifi_ap_get_sta_list(&wifi_sta_list);
-  tcpip_adapter_get_sta_list(&wifi_sta_list, &adapter_sta_list);
+  esp_wifi_ap_get_sta_list_with_ip(&wifi_sta_list, &wifi_sta_ip_mac_list);
 
-  for (int i=0; i<adapter_sta_list.num; i++)
+  for (int i=0; i<wifi_sta_ip_mac_list.num; i++)
   {
-    const uint8_t *m = adapter_sta_list.sta[i].mac;
+    const uint8_t *m = wifi_sta_ip_mac_list.sta[i].mac;
     ResponseAppend_P(PSTR("%s\"%02X%02X%02X%02X%02X%02X\":{\"" D_CMND_IPADDRESS "\":\"%_I\",\"" D_JSON_RSSI "\":%d}"),
-      sep, m[0], m[1], m[2], m[3], m[4], m[5], adapter_sta_list.sta[i].ip, wifi_sta_list.sta[i].rssi);
+      sep, m[0], m[1], m[2], m[3], m[4], m[5], wifi_sta_ip_mac_list.sta[i].ip, wifi_sta_list.sta[i].rssi);
     sep = ",";
   }
 #elif defined(ESP8266)
@@ -210,7 +210,7 @@ void CmndAgdSSID(void)
 {
   if (XdrvMailbox.data_len > 0)
   {
-    SettingsUpdateText(SET_AGD_SSID, (SC_CLEAR == Shortcut()) ? "" : XdrvMailbox.data);
+    SettingsUpdateText(SET_RGX_SSID, (SC_CLEAR == Shortcut()) ? "" : XdrvMailbox.data);
     AgdSettings.status = AGD_FORCE_CONFIGURE;
   }
   ResponseAgdConfig();
@@ -220,7 +220,7 @@ void CmndAgdPassword(void)
 {
   if (XdrvMailbox.data_len > 0)
   {
-    SettingsUpdateText(SET_AGD_PASSWORD, (SC_CLEAR == Shortcut()) ? "" : XdrvMailbox.data);
+    SettingsUpdateText(SET_RGX_PASSWORD, (SC_CLEAR == Shortcut()) ? "" : XdrvMailbox.data);
     AgdSettings.status = AGD_FORCE_CONFIGURE;
   }
   ResponseAgdConfig();
@@ -231,8 +231,8 @@ void ResponseAgdConfig(void)
   AgdCheckConfig();
   Response_P(PSTR("{\"Agd\":{\"Valid\":\"%s\",\"" D_CMND_SSID "\":\"%s\",\"" D_CMND_PASSWORD "\":\"%s\",\"" D_CMND_IPADDRESS "\":\"%_I\",\"" D_JSON_SUBNETMASK "\":\"%_I\"}}"),
              (AgdSettings.status == AGD_CONFIG_INCOMPLETE) ? "false" : "true",
-             EscapeJSONString(SettingsText(SET_AGD_SSID)).c_str(),
-             EscapeJSONString(SettingsText(SET_AGD_PASSWORD)).c_str(),
+             EscapeJSONString(SettingsText(SET_RGX_SSID)).c_str(),
+             EscapeJSONString(SettingsText(SET_RGX_PASSWORD)).c_str(),
              Settings->ipv4_rgx_address,
              Settings->ipv4_rgx_subnetmask);
 }
@@ -246,26 +246,11 @@ void agdSetup()
     AddLog(LOG_LEVEL_DEBUG, PSTR("AGD: Range Extender config incomplete"));
     return;
   }
-#ifdef ESP8266
-  dhcps_set_dns(0, WiFi.dnsIP(0));
-  dhcps_set_dns(1, WiFi.dnsIP(1));
-#endif // ESP8266
-#ifdef ESP32
-  esp_err_t err;
-  tcpip_adapter_dns_info_t ip_dns;
 
-  err = tcpip_adapter_dhcps_stop(TCPIP_ADAPTER_IF_AP);
-  err = tcpip_adapter_get_dns_info(TCPIP_ADAPTER_IF_STA, ESP_NETIF_DNS_MAIN, &ip_dns);
-  err = tcpip_adapter_set_dns_info(TCPIP_ADAPTER_IF_AP, ESP_NETIF_DNS_MAIN, &ip_dns);
-  dhcps_offer_t opt_val = OFFER_DNS; // supply a dns server via dhcps
-  tcpip_adapter_dhcps_option(ESP_NETIF_OP_SET, ESP_NETIF_DOMAIN_NAME_SERVER, &opt_val, 1);
-  err = tcpip_adapter_dhcps_start(TCPIP_ADAPTER_IF_AP);
-#endif // ESP32
   // WiFi.softAPConfig(EXTENDER_LOCAL_IP, EXTENDER_GATEWAY_IP, EXTENDER_SUBNET);
   WiFi.softAPConfig(Settings->ipv4_rgx_address, Settings->ipv4_rgx_address, Settings->ipv4_rgx_subnetmask);
-  WiFi.softAP(SettingsText(SET_AGD_SSID), SettingsText(SET_AGD_PASSWORD));
+  WiFi.softAP(SettingsText(SET_RGX_SSID), SettingsText(SET_RGX_PASSWORD), (int)1, (int)0, (int)4);
   AddLog(LOG_LEVEL_INFO, PSTR("AGD: WiFi Extender AP Enabled with SSID: %s"), WiFi.softAPSSID().c_str());
-  AgdSettings.status = AGD_SETUP_NAPT;
 }
 
 /*********************************************************************************************\
