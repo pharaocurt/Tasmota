@@ -95,6 +95,14 @@ struct {
   uint32_t w1_power_until = 0;
   uint8_t current_sensor = 0;
 #endif
+  char name[17];
+  uint8_t sensors;
+  uint8_t gpios;             // Count of GPIO found
+  uint8_t input_mode = 0;    // INPUT or INPUT_PULLUP (=2)
+  int8_t pin = 0;            // Shelly GPIO3 input only
+  int8_t pin_out = 0;        // Shelly GPIO00 output only
+  bool dual_mode = false;    // Single pin mode
+} DS18X20Data;
 
 /*********************************************************************************************\
  * Embedded tuned OneWire library
@@ -413,6 +421,7 @@ void Ds18x20Init(void) {
   }
 
   AddLog(LOG_LEVEL_DEBUG, PSTR(D_LOG_DSB D_SENSORS_FOUND " %d"), DS18X20Data.sensors);
+
   TasmotaGlobal.devices_present = TasmotaGlobal.devices_present - (2*ds2413_sensors); 
                                   // reset no of devices to avoid duplicate ports on duplicate init.
   ds2413_sensors = 0;
@@ -647,7 +656,7 @@ void Ds18x20EverySecond(void) {
 }
 
 #ifdef USE_WEBSERVER
-const char HTTP_SNS_PORT[]          PROGMEM = "{s}%s "  "IO Status "         "{m}%s "              "{e}";
+//const char HTTP_SNS_PORT[]          PROGMEM = "{s}%s "  "IO Status "         "{m}%s "              "{e}";
 #endif  // USE_WEBSERVER
 
 void Ds18x20Show(bool json) {
@@ -655,32 +664,22 @@ void Ds18x20Show(bool json) {
     uint8_t index = ds18x20_sensor[i].index;
 
     if (ds18x20_sensor[index].valid) {   // Check for valid temperature
-      char temperature[33];
-      if(ds18x20_sensor[index].address[0] == DS2413_CHIPID) {
-        sprintf(temperature, "%c000%c%c%c%c", ds18x20_sensor[index].iobyte&0x80 ?'1':'0',
-            ds18x20_sensor[index].iobyte&0x8 ?'1':'0', ds18x20_sensor[index].iobyte&0x4 ?'1':'0',
-            ds18x20_sensor[index].iobyte&0x2 ?'1':'0', ds18x20_sensor[index].iobyte&0x1 ?'1':'0');
-      } else {
-        dtostrfd(ds18x20_sensor[index].temperature, Settings.flag2.temperature_resolution, temperature);
-      }
-
-      Ds18x20Name(index);
+      Ds18x20Name(i);
 
       if (json) {
+        if (Settings->flag5.ds18x20_mean) {
+          if ((0 == TasmotaGlobal.tele_period) && ds18x20_sensor[index].numread) {
+            ds18x20_sensor[index].temperature = ds18x20_sensor[index].temp_sum / ds18x20_sensor[index].numread;
+            ds18x20_sensor[index].numread = 0;
+          }
+        }
         char address[17];
         for (uint32_t j = 0; j < 6; j++) {
           sprintf(address+2*j, "%02X", ds18x20_sensor[index].address[6-j]);  // Skip sensor type and crc
         }
         if(ds18x20_sensor[index].address[0] != DS2413_CHIPID) {
-#ifndef W1_PARASITE_POWER
-          if (ds18x20_sensor[index].numread) {
-            dtostrfd(ds18x20_sensor[index].temp_sum, Settings.flag2.temperature_resolution, temperature);
-            AddLog_P(LOG_LEVEL_DEBUG, PSTR(D_LOG_DSB "TempSum: %s, NumRead: %d"), temperature, ds18x20_sensor[index].numread);
-            dtostrfd(ds18x20_sensor[index].temp_sum/ds18x20_sensor[index].numread, Settings.flag2.temperature_resolution, temperature);
-            ds18x20_sensor[index].numread = 0;
-          }
-#endif
-          ResponseAppend_P(PSTR(",\"%s\":{\"" D_JSON_ID "\":\"%s\",\"" D_JSON_TEMPERATURE "\":%s}"), ds18x20_types, address, temperature);
+          ResponseAppend_P(PSTR(",\"%s\":{\"" D_JSON_ID "\":\"%s\",\"" D_JSON_TEMPERATURE "\":%*_f}"),
+            DS18X20Data.name, address, Settings->flag2.temperature_resolution, &ds18x20_sensor[index].temperature);
         } else {
           ResponseAppend_P(PSTR(",\"%s\":{\"" D_JSON_ID "\":\"%s\",\"" "Port Status" "\":\"%s\"}"), ds18x20_types, address, temperature);
         }
@@ -696,10 +695,10 @@ void Ds18x20Show(bool json) {
 #endif  // USE_KNX
 #ifdef USE_WEBSERVER
       } else {
-        if(ds18x20_sensor[index].address[0] == DS2413_CHIPID) {
-          WSContentSend_P(HTTP_SNS_PORT, ds18x20_types, temperature);
+        if(ds18x20_sensor[index].address[0] != DS2413_CHIPID) {
+          WSContentSend_Temp(DS18X20Data.name, ds18x20_sensor[index].temperature);
         } else {
-          WSContentSend_PD(HTTP_SNS_TEMP, ds18x20_types, temperature, TempUnit());
+          WSContentSend_P(HTTP_SNS_PORT, ds18x20_types, temperature);
         }
 #endif  // USE_WEBSERVER
       }
