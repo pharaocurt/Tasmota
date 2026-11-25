@@ -69,8 +69,8 @@ struct {
   union {
     float temperature;            // DS18x20
     struct {                      // DS2413
-    uint8_t devidx;                  // remember RelayNumber and RelayNumber+1
-    uint8_t iobyte;               // remember readback state (A==bit1 B==bit3)
+    uint8_t devidx;               // RelayNumber and RelayNumber+1
+    uint8_t iobyte;               // readback state (A==bit1 B==bit3)
     };
   };
   float temp_sum;
@@ -392,7 +392,7 @@ void Ds18x20Init(void) {
           (chip_id == DS1822_CHIPID) ||
           (chip_id == DS18B20_CHIPID) ||
           (chip_id == M1601_CHIPID) ||
-		      (chip_id == DS2413_CHIPID) ||
+          (chip_id == DS2413_CHIPID) ||
           (chip_id == MAX31850_CHIPID))) {
         ds18x20_sensor[DS18X20Data.sensors].index = DS18X20Data.sensors;
         ids[DS18X20Data.sensors] = chip_id;  // Chip id
@@ -424,21 +424,25 @@ void Ds18x20Init(void) {
 
   AddLog(LOG_LEVEL_DEBUG, PSTR(D_LOG_DSB D_SENSORS_FOUND " %d"), DS18X20Data.sensors);
 
-  TasmotaGlobal.devices_present = TasmotaGlobal.devices_present - (2*DS18X20Data.ds2413_sensors); 
-                                  // reset no of devices to avoid duplicate ports on duplicate init.
+            // reset no of devices to avoid duplicate ports on duplicate init
+  TasmotaGlobal.devices_present = TasmotaGlobal.devices_present
+                                            - (2*DS18X20Data.ds2413_sensors); 
   DS18X20Data.ds2413_sensors = 0;
   for (uint32_t i = 0; i < DS18X20Data.sensors; i++) {
     if (ds18x20_sensor[i].address[0] == DS2413_CHIPID) {
       ds18x20_sensor[i].devidx = TasmotaGlobal.devices_present;
-      if (Ds18x20Read(i)) {                   // restore Powerstate
-        bitWrite(TasmotaGlobal.power, TasmotaGlobal.devices_present, (ds18x20_sensor[i].iobyte&0x2)>>1);
-        bitWrite(TasmotaGlobal.power, TasmotaGlobal.devices_present+1, (ds18x20_sensor[i].iobyte&0x8)>>3);
+      if (Ds18x20Read(i)) {                             // restore Powerstate
+        bitWrite(TasmotaGlobal.power, TasmotaGlobal.devices_present,
+                                          (ds18x20_sensor[i].iobyte&0x2)>>1);
+        bitWrite(TasmotaGlobal.power, TasmotaGlobal.devices_present+1,
+                                          (ds18x20_sensor[i].iobyte&0x8)>>3);
       }
-      TasmotaGlobal.devices_present +=2;	// 2 Output Ports + 2 Inputs Readback OpenCollector status
+      TasmotaGlobal.devices_present +=2;   // 2 Out and 2 In Readback OpenCol
       DS18X20Data.ds2413_sensors++;  
     }		 
   }
-  AddLog(LOG_LEVEL_DEBUG, PSTR(D_LOG_DSB " DS2413 GPIO gefunden - %d"), DS18X20Data.ds2413_sensors);
+  AddLog(LOG_LEVEL_DEBUG, PSTR(D_LOG_DSB " DS2413 GPIO gefunden %d"),
+                                                 DS18X20Data.ds2413_sensors);
 }
 
 void Ds18x20Convert(void) {
@@ -473,91 +477,94 @@ bool Ds18x20Read(uint8_t sensor) {
   for (uint32_t retry = 0; retry < 3; retry++) {
     OneWireReset();
     OneWireSelect(ds18x20_sensor[index].address);
-	  if (ds18x20_sensor[index].address[0] != DS2413_CHIPID) {
+    if (ds18x20_sensor[index].address[0] != DS2413_CHIPID) {
       OneWireWrite(W1_READ_SCRATCHPAD);
       for (uint32_t i = 0; i < 9; i++) {
         data[i] = OneWireRead();
       }
-    }
 #ifdef DS18X20_DEBUG
-    AddLog(LOG_LEVEL_DEBUG, PSTR("DSB: OneWireRead ChipId 0x%02X, %9_H"), ds18x20_sensor[index].chip_id, data);
+      AddLog(LOG_LEVEL_DEBUG, PSTR("DSB: OneWireRead ChipId 0x%02X, %9_H"), ds18x20_sensor[index].chip_id, data);
 #endif  // DS18X20_DEBUG
-    if (OneWireCrc8(data, 8)) {
-      switch(ds18x20_sensor[index].chip_id) {
-        case DS18S20_CHIPID: {
-          int16_t tempS = (((data[1] << 8) | (data[0] & 0xFE)) << 3) | ((0x10 - data[6]) & 0x0F);
-          temperature = ConvertTemp(tempS * 0.0625f - 0.250f);
-          break;
-        }
-        case DS1822_CHIPID:
-        case DS18B20_CHIPID: {
-          // 71 01 4B 46 7F FF 0F 10 56
-          if (data[4] != 0x7F) {
-            data[4] = 0x7F;                 // Set resolution to 12-bit
-            OneWireReset();
-            OneWireSelect(ds18x20_sensor[index].address);
-            OneWireWrite(W1_WRITE_SCRATCHPAD);
-            OneWireWrite(data[2]);          // Th Register
-            OneWireWrite(data[3]);          // Tl Register
-            OneWireWrite(data[4]);          // Configuration Register
-            OneWireSelect(ds18x20_sensor[index].address);
-            OneWireWrite(W1_WRITE_EEPROM);  // Save scratchpad to EEPROM
+      if (OneWireCrc8(data, 8)) {
+        switch(ds18x20_sensor[index].chip_id) {
+          case DS18S20_CHIPID: {
+            int16_t tempS = (((data[1] << 8) | (data[0] & 0xFE)) << 3) | ((0x10 - data[6]) & 0x0F);
+            temperature = ConvertTemp(tempS * 0.0625f - 0.250f);
+            break;
+          }
+          case DS1822_CHIPID:
+          case DS18B20_CHIPID: {
+            // 71 01 4B 46 7F FF 0F 10 56
+            if (data[4] != 0x7F) {
+              data[4] = 0x7F;                 // Set resolution to 12-bit
+              OneWireReset();
+              OneWireSelect(ds18x20_sensor[index].address);
+              OneWireWrite(W1_WRITE_SCRATCHPAD);
+              OneWireWrite(data[2]);          // Th Register
+              OneWireWrite(data[3]);          // Tl Register
+              OneWireWrite(data[4]);          // Configuration Register
+              OneWireSelect(ds18x20_sensor[index].address);
+              OneWireWrite(W1_WRITE_EEPROM);  // Save scratchpad to EEPROM
 #ifdef W1_PARASITE_POWER
-            DS18X20Data.w1_power_until = millis() + 10; // 10ms specified duration for EEPROM write
+              DS18X20Data.w1_power_until = millis() + 10; // 10ms specified duration for EEPROM write
 #endif
+            }
+            uint16_t temp12 = (data[1] << 8) + data[0];
+            if (temp12 > 2047) {
+              temp12 = (~temp12) +1;
+              sign = -1;
+            }
+            temperature = ConvertTemp(sign * temp12 * 0.0625f);  // Divide by 16
+            break;
           }
-          uint16_t temp12 = (data[1] << 8) + data[0];
-          if (temp12 > 2047) {
-            temp12 = (~temp12) +1;
-            sign = -1;
+          case M1601_CHIPID: {
+            // 96 F1 00 80 55 05 02 09 86
+            float temp = (int16_t)(data[1] << 8) + data[0];
+            temperature = ConvertTemp(40 + (temp / 256));
+            break;
           }
-          temperature = ConvertTemp(sign * temp12 * 0.0625f);  // Divide by 16
-          break;
-        }
-        case M1601_CHIPID: {
-          // 96 F1 00 80 55 05 02 09 86
-          float temp = (int16_t)(data[1] << 8) + data[0];
-          temperature = ConvertTemp(40 + (temp / 256));
-          break;
-        }
-        case MAX31850_CHIPID: {
-          int16_t temp14 = (data[1] << 8) + (data[0] & 0xFC);
-          temperature = ConvertTemp(temp14 * 0.0625f);  // Divide by 16
-          break;
-        }
-        case DS2413_CHIPID: {
-          OneWireWrite(DS2413_ACCESS_READ);
-          data[0] = OneWireRead();
-          ds18x20_sensor[index].iobyte = data[0]&0x0f; /* Read status byte */
-          if ((data[0]&0x0f)==(((~data[0])&0xf0)>>4)){
-           ds18x20_sensor[index].valid = SENSOR_MAX_MISS;
-           return true;
+          case MAX31850_CHIPID: {
+            int16_t temp14 = (data[1] << 8) + (data[0] & 0xFC);
+            temperature = ConvertTemp(temp14 * 0.0625f);  // Divide by 16
+            break;
           }
-          ds18x20_sensor[index].iobyte |= 0x80;           /* set error bit */
-          break;
         }
+        ds18x20_sensor[index].temperature = temperature;
+        if (Settings->flag5.ds18x20_mean) {
+          if (ds18x20_sensor[index].numread++ == 0) {
+            ds18x20_sensor[index].temp_sum = 0;
+          }
+          ds18x20_sensor[index].temp_sum += temperature;
+        }
+        ds18x20_sensor[index].valid = SENSOR_MAX_MISS;
+        return true;
       }
-      ds18x20_sensor[index].temperature = temperature;
-      if (Settings->flag5.ds18x20_mean) {
-        if (ds18x20_sensor[index].numread++ == 0) {
-          ds18x20_sensor[index].temp_sum = 0;
-        }
-        ds18x20_sensor[index].temp_sum += temperature;
+    } else {
+      OneWireWrite(DS2413_ACCESS_READ);
+      data[0] = OneWireRead();
+      ds18x20_sensor[index].iobyte = data[0]&0x0f;    /* Read status byte */
+#ifdef DS18X20_DEBUG
+      AddLog(LOG_LEVEL_DEBUG, PSTR("DSB: OneWireRead ChipId 0x%02X, %02X"),
+                                     ds18x20_sensor[index].chip_id, data[0]);
+#endif  // DS18X20_DEBUG
+      if ((data[0]&0x0f)==(((~data[0])&0xf0)>>4)) {
+        ds18x20_sensor[index].valid = SENSOR_MAX_MISS;
+        return true;
       }
-      ds18x20_sensor[index].valid = SENSOR_MAX_MISS;
-      return true;
-
+      ds18x20_sensor[index].iobyte |= 0x80;               /* set error bit */
+      break;
     }
   }
   AddLog(LOG_LEVEL_DEBUG, PSTR(D_LOG_DSB D_SENSOR_CRC_ERROR));
   return false;
 }
 
-void Ds18x20Name(uint8_t sensor)
-{
-  uint8_t index = sizeof(ds18x20_chipids);
-  while (index) {
-    if (ds18x20_sensor[ds18x20_sensor[sensor].index].address[0] == ds18x20_chipids[index]) {
+void Ds18x20Name(uint8_t sensor) {
+  uint32_t sensor_index = ds18x20_sensor[sensor].index;
+
+  uint32_t index = sizeof(ds18x20_chipids);
+  while (--index) {
+    if (ds18x20_sensor[sensor_index].chip_id == ds18x20_chipids[index]) {
       break;
     }
   }
@@ -594,9 +601,10 @@ void Ds18x20Name(uint8_t sensor)
 void Ds2413write() {
   for (uint32_t i = 0; i < DS18X20Data.sensors; i++) {
     if (ds18x20_sensor[i].address[0] == DS2413_CHIPID) {
-      // uint8_t relay_state = bitRead(XdrvMailbox.index, ds18x20_sensor[i].devidx);
-      uint8_t relay_state = bitRead(TasmotaGlobal.power, ds18x20_sensor[i].devidx);
-      relay_state |= bitRead(TasmotaGlobal.power, ds18x20_sensor[i].devidx+1)<<1;
+      uint8_t relay_state = bitRead(TasmotaGlobal.power,
+                                                   ds18x20_sensor[i].devidx);
+      relay_state |= bitRead(TasmotaGlobal.power,
+                                              ds18x20_sensor[i].devidx+1)<<1;
       if ( relay_state != (((ds18x20_sensor[i].iobyte &   0b10)>>1) |
                            ((ds18x20_sensor[i].iobyte & 0b1000)>>2))) {
         OneWireReset();
@@ -613,7 +621,8 @@ void Ds2413write() {
           ds18x20_sensor[i].iobyte = relay_state&0x0f; /* Read status byte */
           if ((relay_state&0x0f)!=(((~relay_state)&0xf0)>>4))
             ds18x20_sensor[i].iobyte |= 0x80;             /* set error bit */
-            AddLog(LOG_LEVEL_DEBUG, PSTR(D_LOG_DSB " DS2413 Read Port %8x: %2x"),
+            AddLog(LOG_LEVEL_DEBUG,
+                              PSTR(D_LOG_DSB " DS2413 Read Port %8x: %2x"),
                                      ds18x20_sensor[i].address, relay_state);
         }
         OneWireReset();
@@ -658,7 +667,7 @@ void Ds18x20EverySecond(void) {
 }
 
 #ifdef USE_WEBSERVER
-const char HTTP_SNS_PORT[]          PROGMEM = "{s}%s "  "IO Status "         "{m}%s "              "{e}";
+const char HTTP_SNS_PORT[] PROGMEM =   "{s}%s " "IO Status " "{m}%8_b " "{e}";
 #endif  // USE_WEBSERVER
 
 void Ds18x20Show(bool json) {
@@ -682,25 +691,27 @@ void Ds18x20Show(bool json) {
         if(ds18x20_sensor[index].address[0] != DS2413_CHIPID) {
           ResponseAppend_P(PSTR(",\"%s\":{\"" D_JSON_ID "\":\"%s\",\"" D_JSON_TEMPERATURE "\":%*_f}"),
             DS18X20Data.name, address, Settings->flag2.temperature_resolution, &ds18x20_sensor[index].temperature);
-        } else {
-          ResponseAppend_P(PSTR(",\"%s\":{\"" D_JSON_ID "\":\"%s\",\"" "Port Status" "\":\"%s\"}"), DS18X20Data.name, ds18x20_sensor[index].address, ds18x20_sensor[index].temperature);
-        }
 #ifdef USE_DOMOTICZ
-        if ((0 == TasmotaGlobal.tele_period) && (0 == i)) {
-          DomoticzFloatSensor(DZ_TEMP, ds18x20_sensor[index].temperature);
-        }
+          if ((0 == TasmotaGlobal.tele_period) && (0 == i)) {
+            DomoticzFloatSensor(DZ_TEMP, ds18x20_sensor[index].temperature);
+          }
 #endif  // USE_DOMOTICZ
 #ifdef USE_KNX
-        if ((0 == TasmotaGlobal.tele_period) && (0 == i)) {
-          KnxSensor(KNX_TEMPERATURE, ds18x20_sensor[index].temperature);
-        }
+          if ((0 == TasmotaGlobal.tele_period) && (0 == i)) {
+            KnxSensor(KNX_TEMPERATURE, ds18x20_sensor[index].temperature);
+          }
 #endif  // USE_KNX
+        } else {
+          ResponseAppend_P(PSTR(",\"%s\":{\"" D_JSON_ID "\":\"%s\",\"" "Port Status" "\":%*_H}"),
+                DS18X20Data.name, address, 1, &ds18x20_sensor[index].iobyte);
+        }
 #ifdef USE_WEBSERVER
       } else {
         if(ds18x20_sensor[index].address[0] != DS2413_CHIPID) {
           WSContentSend_Temp(DS18X20Data.name, ds18x20_sensor[index].temperature);
         } else {
-          WSContentSend_P(HTTP_SNS_PORT, DS18X20Data.name, ds18x20_sensor[index].temperature);
+          WSContentSend_P(HTTP_SNS_PORT, DS18X20Data.name,
+                                              ds18x20_sensor[index].iobyte);
         }
 #endif  // USE_WEBSERVER
       }
